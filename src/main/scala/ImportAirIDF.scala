@@ -24,10 +24,17 @@ object ImportAirIDF {
       .option("header", true)
       .load("./data/idf_data.csv")
     println("=== Structure du dataset QUALITE AIR IDF ===")
-    df.show()
+
+    println("Nombres de lignes avant nettoyage : " + df.count())
+    //Suppression des doublons et des valeurs manquantes
+    val df_cleaned = df.na.drop().dropDuplicates()
+    println("Nombres de lignes après nettoyage : " + df.count())
+
+    //Affichage
+    println("=== Données nettoyées ===")
+    df.show(20)
 
     //Arrêt de Spark
     spark.stop()
   }
 }
-

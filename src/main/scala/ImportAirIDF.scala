@@ -60,6 +60,14 @@ object ImportAirIDF {
     println("=== Données nettoyées ===")
     df.show(20)
 
+    // Requête SQL
+    println("=== Données avec \"stop_lon\" > 2.5 ===")
+    df.createOrReplaceTempView("pollution")
+		var df_req = spark.sql("SELECT * FROM pollution WHERE stop_lon > 2.5")
+		df_req.show()
+		
+		println("Nombres de lignes retenues après la requête : " + df_req.count())
+
     //Arrêt de Spark
     spark.stop()
   }

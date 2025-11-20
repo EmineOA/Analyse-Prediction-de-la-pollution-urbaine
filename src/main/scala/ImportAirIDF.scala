@@ -20,7 +20,7 @@ object ImportAirIDF {
     //Lecture du CSV
     val df = spark.read
       .format("csv")
-      .option("sep", ';')
+      .option("sep", ";")
       .option("header", true)
       .load("./data/idf_data.csv")
     println("=== Structure du dataset QUALITE AIR IDF ===")
@@ -30,3 +30,4 @@ object ImportAirIDF {
     spark.stop()
   }
 }
+

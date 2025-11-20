@@ -9,4 +9,4 @@ mettre ceci dans les options VM:
 --add-exports=java.base/sun.nio.ch=ALL-UNNAMED 
 
 ## Pour Linux
-aucune manipulation à faire car cet OS est trop bien
+aucune manipulations à faire car cet OS est trop bien

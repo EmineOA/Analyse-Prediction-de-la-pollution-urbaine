@@ -1,2 +1,8 @@
-# Analyse-Prediction-de-la-pollution-urbaine
-Application d’analyse et de prévision de la pollution urbaine en Scala/Spark. Traitement massif (RDD, DataFrames, SQL), nettoyage fonctionnel, détection de zones/pics pollués, modélisation prédictive (MLlib) et analyse du réseau urbain via GraphX pour étudier la propagation de la pollution.
+#Instruction
+Télécharger Hadoop 3.x.x via ce repo par exemple: https://github.com/cdarlint/winutils/tree/master/hadoop-3.0.1
+L'insérer dans le dossier IntelliJ Idea
+
+Si utilisation de JDK 17, mettre ceci dans les options VM:
+--add-exports=java.base/sun.nio.ch=ALL-UNNAMED -Dhadoop.home.dir=C:\Users\Administrateur\IdeaProjects\untitled1\hadoop -Djava.library.path=C:\Users\Administrateur\IdeaProjects\untitled1\hadoop\bin 
+Sinon juste mettre: 
+-Dhadoop.home.dir=C:\Users\Administrateur\IdeaProjects\untitled1\hadoop -Djava.library.path=C:\Users\Administrateur\IdeaProjects\untitled1\hadoop\bin

@@ -18,19 +18,13 @@ object ImportAirIDF {
     spark.sparkContext.setLogLevel("WARN")
 
     //Lecture du CSV
-    val airPath: String = "H:\\\\Desktop\\\\2éme année" +
-      "\\\\prog fonctionnelle" +
-      "\\\\projet Spark"
-
-    val airDFraw = spark.read
-      .option("header", "true")
-      .option("sep", ";")
-      .option("interSchema", "true") //attribution ds types automatiques
-      .csv(airPath)
-
+    val df = spark.read
+      .format("csv")
+      .option("sep", ';')
+      .option("header", true)
+      .load("./data/idf_data.csv")
     println("=== Structure du dataset QUALITE AIR IDF ===")
-    airDFraw.printSchema()
-    airDFraw.show(10, truncate = false)
+    df.show()
 
     //Arrêt de Spark
     spark.stop()

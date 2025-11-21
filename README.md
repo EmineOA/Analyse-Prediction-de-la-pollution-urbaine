@@ -9,4 +9,7 @@ mettre ceci dans les options VM:
 --add-exports=java.base/sun.nio.ch=ALL-UNNAMED 
 
 ## Pour Linux
-aucune manipulations à faire car cet OS est trop bien
+Aucune manipulation à faire car cet OS est trop bien.
+
+### Modifications dataset
+Retirer les colonnes "Incertitude", "Action(s) QAI en cours", "Lien vers les mesures en direct", "Durée des mesures", "Mesures d'amélioration mises en place ou prévues", "air", "actions" pour manque de données.

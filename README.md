@@ -11,5 +11,6 @@ mettre ceci dans les options VM:
 ## Pour Linux
 Aucune manipulation à faire car cet OS est trop bien.
 
-### Modifications dataset
+
+# Modifications dataset
 Retirer les colonnes "Incertitude", "Action(s) QAI en cours", "Lien vers les mesures en direct", "Durée des mesures", "Mesures d'amélioration mises en place ou prévues", "air", "actions" pour manque de données.

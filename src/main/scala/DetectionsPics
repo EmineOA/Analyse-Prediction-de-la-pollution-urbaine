@@ -1,0 +1,33 @@
+import org.apache.spark.sql.functions._
+import org.apache.spark.sql.expressions.Window
+
+// 1. Extraire la date et l'heure pour faciliter les groupements
+val pm10_prep = pm10_enriched
+  .withColumn("date", to_date(col("timestamp")))    // extrait la date entière
+  .withColumn("hour", hour(to_timestamp(col("timestamp"))))  // extrait l'heure (0-23)
+
+// 2. Calcul des stats par station sur l'ensemble de la période (ex : moyenne et écart-type)
+val stats_pm10 = pm10_prep.groupBy("Nom de la Station")
+  .agg(
+    avg("pm10_value").as("mean_pm10"),
+    stddev("pm10_value").as("std_pm10")
+  )
+
+// 3. Join avec les stats pour détecter les pics horaires (ici seuil = moyenne + 2*écart-type)
+val pm10_with_stats = pm10_prep
+  .join(stats_pm10, "Nom de la Station")
+  .withColumn("pic_horaire", col("pm10_value") > col("mean_pm10") + (lit(2) * col("std_pm10")))
+
+// 4. Compter le nombre de pics par station et par jour (ou tranche horaire)
+val pics_per_station_day = pm10_with_stats
+  .filter(col("pic_horaire"))
+  .groupBy("Nom de la Station", "date")
+  .agg(count("*").as("nb_pics_horaires"))
+
+// 5. (Optionnel) Identifier les heures critiques (dans la journée)
+val pics_per_station_hour = pm10_with_stats
+  .filter(col("pic_horaire"))
+  .groupBy("Nom de la Station", "hour")
+  .agg(count("*").as("nb_pics_par_heure"))
+
+// Tu peux adapter le seuil, la période et répliquer pour pm25_enriched simplement en changeant “pm10” par “pm25”

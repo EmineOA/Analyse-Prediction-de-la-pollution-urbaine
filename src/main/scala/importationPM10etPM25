@@ -1,0 +1,45 @@
+// 1. Importation brute des CSV (sans header)
+val pm10_raw = spark.read
+  .format("csv")
+  .option("header", false)
+  .option("sep", ",")
+  .load("chemin/vers/pm10.csv")
+
+val pm25_raw = spark.read
+  .format("csv")
+  .option("header", false)
+  .option("sep", ",")
+  .load("chemin/vers/pm25.csv")
+
+// 2. Transformation au format “long” (unpivot)
+// Pour PM10
+val stationIndexes = 1 until pm10_raw.columns.length
+
+val pm10_long = pm10_raw.flatMap { row =>
+  val timestamp = row.getString(0)
+  stationIndexes.map { i =>
+    val value = row.getString(i)
+    val code = pm10_raw.columns(i)
+    if (value != null && value.nonEmpty) {
+      (timestamp, code, value.toDouble)
+    } else {
+      null
+    }
+  }.filter(_ != null)
+}.toDF("timestamp", "station_code", "pm10_value")
+
+// Pour PM25
+val stationIndexes25 = 1 until pm25_raw.columns.length
+
+val pm25_long = pm25_raw.flatMap { row =>
+  val timestamp = row.getString(0)
+  stationIndexes25.map { i =>
+    val value = row.getString(i)
+    val code = pm25_raw.columns(i)
+    if (value != null && value.nonEmpty) {
+      (timestamp, code, value.toDouble)
+    } else {
+      null
+    }
+  }.filter(_ != null)
+}.toDF("timestamp", "station_code", "pm25_value")

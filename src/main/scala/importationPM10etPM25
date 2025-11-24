@@ -43,3 +43,32 @@ val pm25_long = pm25_raw.flatMap { row =>
     }
   }.filter(_ != null)
 }.toDF("timestamp", "station_code", "pm25_value")
+
+
+
+// Import du dataset principal
+val stations_df = spark.read
+  .format("csv")
+  .option("header", true)
+  .option("sep", ";")
+  .load("chemin/vers/idf_data_clean.csv")
+
+// Exemple de mapping "code station" -> "Nom de la Station"
+// À remplir selon tes abréviations PM10/25 et Noms de station du csv principal
+val mapping_seq = Seq(
+  ("NOGENT", "La Hacquinière"),
+  ("BOB", "Le Bourget"),
+  ("CERGY", "Cergy Préfecture"),
+  // ...
+)
+val mapping_df = mapping_seq.toDF("station_code", "Nom de la Station")
+
+// Jointure PM10 enrichie
+val pm10_enriched = pm10_long
+  .join(mapping_df, "station_code")
+  .join(stations_df, "Nom de la Station")
+
+// Jointure PM25 enrichie
+val pm25_enriched = pm25_long
+  .join(mapping_df, "station_code")
+  .join(stations_df, "Nom de la Station")

@@ -1,4 +1,4 @@
-<img width="212" height="17" alt="image" src="https://github.com/user-attachments/assets/a6251d61-c38c-43cf-9819-0f0d1f94d9ed" /># Instructions
+# Instructions
 
 ## Pour Windows:
 Télécharger Hadoop 3.x.x via ce repo par exemple: https://github.com/cdarlint/winutils/tree/master/hadoop-3.0.1

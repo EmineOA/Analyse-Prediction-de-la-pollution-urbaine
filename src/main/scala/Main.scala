@@ -16,7 +16,8 @@ object Main {
 			case (value, idx) =>
 				if (idx == 0) {
 					firstName
-				} else {
+				}
+				else {
 					// valeur brute de la cellule d'en-tête
 					val raw = Option(value).map(_.toString.trim).getOrElse("")
 					val base =
@@ -53,7 +54,7 @@ object Main {
 		spark.sparkContext.setLogLevel("WARN")
 
 		//chemins
-		val idfPath = "./data/idf_data_clean.csv"
+		val idfPath = "./data/idf_data.csv"
 		val pm10Path = "./data/pm10.csv"
 		val pm25Path = "./data/pm25.csv"
 

@@ -101,13 +101,13 @@ object Main {
 		//println("Nombres de lignes après nettoyage : " + df.count())
 
 		// Liste de stations pour la simulation en temps réel
-    	val stationsList = df
-		  .select($"Nom de la Station")
-    	  .distinct()
-      	  .limit(20) // on ne garde que 20 stations pour éviter un tableau énorme
-      	  .as[String]
-      	  .collect()
-      	  .toSeq
+		val stationsList = df
+			.select($"Nom de la Station")
+			.distinct()
+			.limit(20) // on ne garde que 20 stations pour éviter un tableau énorme
+			.as[String]
+			.collect()
+			.toSeq
 
 		//Affichage
 		println("=== 5 premières lignes des dataset ===")
@@ -383,101 +383,99 @@ object Main {
 			).orderBy(desc("z_score"))
 			.show(50, false)
 
-			/*
-	      6) Traitement en temps réel
-	        - Simulation de flux de données provenant de capteurs en continu.
-	        - Application de transformations fonctionnelles sur ces flux.
-	        - Détection et signalement automatique des anomalies.
-	     */
+		/*
+			6) Traitement en temps réel
+			- Simulation de flux de données provenant de capteurs en continu.
+			- Application de transformations fonctionnelles sur ces flux.
+			- Détection et signalement automatique des anomalies.
+		*/
+
+		import org.apache.spark.sql.functions.{window, stddev_pop}
+
+		println("=== Démarrage de la simulation temps réel (Z-score) ===")
+
+		// 1) Flux "capteurs" simulé avec la source rate
+		val rawStream = spark.readStream
+			.format("rate")
+			.option("rowsPerSecond", 10)   // tu peux augmenter / diminuer
+			.load()                        // colonnes : timestamp, value
+
+		// On réutilise une liste de stations (définie plus haut dans ton code)
+		// stationsList : Seq[String]
+		val stationsArrayCol = array(stationsList.map(lit(_)):_*)
+
+		val sensorStream = rawStream
+			.withColumn("datetime", $"timestamp")
+			// station choisie en fonction de value % nbStations
+			.withColumn("station_index",
+			($"value" % size(stationsArrayCol)).cast("int")
+			)
+			.withColumn("station",
+			element_at(stationsArrayCol, $"station_index" + 1)
+			)
+			// PM10 et PM25 simulées (distributions uniformes)
+			.withColumn("pm10", expr("20 + rand() * 80"))  // ≈ [20, 100]
+			.withColumn("pm25", expr("10 + rand() * 50"))  // ≈ [10, 60]
+			.select("datetime", "station", "pm10", "pm25")
 	
-	    import org.apache.spark.sql.functions.{window, stddev_pop}
+		// 2) Fenêtres temporelles par station
+		// Fenêtre courte (30 s) glissant toutes les 10 s pour voir rapidement des résultats
+		val windowedStats = sensorStream
+			// .withWatermark("datetime", "10 minutes") // tu pourras le remettre si tu veux parler de retard
+			.groupBy(
+				window($"datetime", "30 seconds", "10 seconds"),
+				$"station"
+			)
+			.agg(
+				avg($"pm10").as("pm10_mean"),
+				stddev_pop($"pm10").as("pm10_std"),
+				max($"pm10").as("pm10_max"),
+				avg($"pm25").as("pm25_mean"),
+				stddev_pop($"pm25").as("pm25_std"),
+				max($"pm25").as("pm25_max")
+			)
+			// 3) Z-score sur le max de la fenêtre (même idée que dans la partie batch)
+			.withColumn(
+				"pm10_zscore",
+				when($"pm10_std" > 0, ($"pm10_max" - $"pm10_mean") / $"pm10_std")
+					.otherwise(lit(0.0))
+			)
+			.withColumn(
+				"pm25_zscore",
+				when($"pm25_std" > 0, ($"pm25_max" - $"pm25_mean") / $"pm25_std")
+					.otherwise(lit(0.0))
+			)
 	
-	    println("=== Démarrage de la simulation temps réel (Z-score) ===")
+		// 4) Anomalies : fenêtres où le max s'écarte fortement de la moyenne
+		// Seuil "gentil" (1.0) pour voir quelque chose en simulation
+		// z-score plus agressif
+		val anomaliesStream = windowedStats
+			.filter($"pm10_zscore" >= 1.75 || $"pm25_zscore" >= 1.75)
+			.select(
+				$"window.start".as("window_start"),
+				$"window.end".as("window_end"),
+				$"station",
+				$"pm10_max",
+				$"pm10_mean",
+				$"pm10_std",
+				$"pm10_zscore",
+				$"pm25_max",
+				$"pm25_mean",
+				$"pm25_std",
+				$"pm25_zscore"
+			)
 	
-	    // 1) Flux "capteurs" simulé avec la source rate
-	    val rawStream = spark.readStream
-	      .format("rate")
-	      .option("rowsPerSecond", 10)   // tu peux augmenter / diminuer
-	      .load()                        // colonnes : timestamp, value
-	
-	    // On réutilise une liste de stations (définie plus haut dans ton code)
-	    // stationsList : Seq[String]
-	    val stationsArrayCol = array(stationsList.map(lit(_)):_*)
-	
-	    val sensorStream = rawStream
-	      .withColumn("datetime", $"timestamp")
-	      // station choisie en fonction de value % nbStations
-	      .withColumn("station_index",
-	        ($"value" % size(stationsArrayCol)).cast("int")
-	      )
-	      .withColumn("station",
-	        element_at(stationsArrayCol, $"station_index" + 1)
-	      )
-	      // PM10 et PM25 simulées (distributions uniformes)
-	      .withColumn("pm10", expr("20 + rand() * 80"))  // ≈ [20, 100]
-	      .withColumn("pm25", expr("10 + rand() * 50"))  // ≈ [10, 60]
-	      .select("datetime", "station", "pm10", "pm25")
-	
-	    // 2) Fenêtres temporelles par station
-	    // Fenêtre courte (30 s) glissant toutes les 10 s pour voir rapidement des résultats
-	    val windowedStats = sensorStream
-	      // .withWatermark("datetime", "10 minutes") // tu pourras le remettre si tu veux parler de retard
-	      .groupBy(
-	        window($"datetime", "30 seconds", "10 seconds"),
-	        $"station"
-	      )
-	      .agg(
-	        avg($"pm10").as("pm10_mean"),
-	        stddev_pop($"pm10").as("pm10_std"),
-	        max($"pm10").as("pm10_max"),
-	        avg($"pm25").as("pm25_mean"),
-	        stddev_pop($"pm25").as("pm25_std"),
-	        max($"pm25").as("pm25_max")
-	      )
-	      // 3) Z-score sur le max de la fenêtre (même idée que dans la partie batch)
-	      .withColumn(
-	        "pm10_zscore",
-	        when($"pm10_std" > 0, ($"pm10_max" - $"pm10_mean") / $"pm10_std")
-	          .otherwise(lit(0.0))
-	      )
-	      .withColumn(
-	        "pm25_zscore",
-	        when($"pm25_std" > 0, ($"pm25_max" - $"pm25_mean") / $"pm25_std")
-	          .otherwise(lit(0.0))
-	      )
-	
-	    // 4) Anomalies : fenêtres où le max s'écarte fortement de la moyenne
-	    // Seuil "gentil" (1.0) pour voir quelque chose en simulation
-	    // z-score plus agressif
-	    val anomaliesStream = windowedStats
-	      .filter($"pm10_zscore" >= 1.75 || $"pm25_zscore" >= 1.75)
-	      .select(
-	        $"window.start".as("window_start"),
-	        $"window.end".as("window_end"),
-	        $"station",
-	        $"pm10_max",
-	        $"pm10_mean",
-	        $"pm10_std",
-	        $"pm10_zscore",
-	        $"pm25_max",
-	        $"pm25_mean",
-	        $"pm25_std",
-	        $"pm25_zscore"
-	      )
-	
-	    // 5) Sortie console en temps réel
-	    val query = anomaliesStream.writeStream
-	      .format("console")
-	      .outputMode("update")      // pas de sort global, donc "update" OK
-	      .option("truncate", "false")
-	      .option("numRows", 50)
-	      .start()
-	
-	    query.awaitTermination()
-	
-	    //Arrêt de Spark
-	    spark.stop()
+		// 5) Sortie console en temps réel
+		val query = anomaliesStream.writeStream
+			.format("console")
+			.outputMode("update")      // pas de sort global, donc "update" OK
+			.option("truncate", "false")
+			.option("numRows", 50)
+			.start()
+
+		query.awaitTermination()
+
+		//Arrêt de Spark
+		spark.stop()
 	}
-
 }
-

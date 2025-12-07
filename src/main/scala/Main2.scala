@@ -61,6 +61,19 @@ object Main2 {
 	
 	
 	
+	def qualiToQuanti(idf: DataFrame): DataFrame={					// Variable qualitative pollution -> Variable quantitative
+		idf.withColumn(
+			"score_pollution",
+			when($"Niveau de pollution" === "FAIBLE", lit(1))
+			.when($"Niveau de pollution" === "MOYENNE", lit(2))
+			.when($"Niveau de pollution" === "ELEVE", lit(3))
+			.when($"Niveau de pollution" === "station aérienne", lit(0))	// Stations aériennes non prises en compte
+			.otherwise(lit(null).cast("int"))
+		)
+	}
+	
+	
+	
 	def buildUniqueColNames(pm: DataFrame): Array[String] = {				// Transformation des noms 
 		val seen = scala.collection.mutable.Map[String, Int]()
 
@@ -71,15 +84,7 @@ object Main2 {
 					"datetime"		// Valeur de la première en-tête
 				}
 				else {
-					val count = seen.getOrElse(Option(value).map(_.toString.trim).getOrElse(""), 0)
-					seen.update(Option(value).map(_.toString.trim).getOrElse(""), count + 1)
-
-					if (count == 0){
-						Option(value).map(_.toString.trim).getOrElse("")			// première fois -> "RD934"
-					}
-					else{
-						Option(value).map(_.toString.trim).getOrElse("") + s"_$count"		// deuxième fois -> "RD934_1", puis "RD934_2", etc.
-					}
+					Option(value).map(_.toString.trim).getOrElse("")
 				}
 		}.toArray
 	}
@@ -116,9 +121,8 @@ object Main2 {
 	
 	
 	def importCSV(): (DataFrame, DataFrame, DataFrame)={				// Import des fichiers CSV idf_data.csv, pm10.csv et pm25.csv
-		// Retourne trois dataframes à partir des csv
 		(
-			importIndivCSV(true, "./data/idf_data.csv"),
+			qualiToQuanti(importIndivCSV(true, "./data/idf_data.csv")),
 			wideToLong(importIndivCSV(false, "./data/pm10.csv")),
 			wideToLong(importIndivCSV(false, "./data/pm25.csv"))
 		)
@@ -197,19 +201,6 @@ object Main2 {
 	
 	
 	
-	def qualiToQuanti(idf: DataFrame): DataFrame={					// Variable qualitative pollution -> Variable quantitative
-		idf.withColumn(
-			"score_pollution",
-			when($"Niveau de pollution" === "FAIBLE", lit(1))
-			.when($"Niveau de pollution" === "MOYENNE", lit(2))
-			.when($"Niveau de pollution" === "ELEVE", lit(3))
-			.when($"Niveau de pollution" === "station aérienne", lit(0))	// Stations aériennes non prises en compte
-			.otherwise(lit(null).cast("int"))
-		)
-	}
-	
-	
-	
 	def mostPolluted(idf: DataFrame)={						// Identification des stations les plus polluées
 		idf
 			.groupBy("Nom de la Station", "Nom de la ligne")
@@ -256,7 +247,72 @@ object Main2 {
 	
 	
 	
+	def globalIndic(idf: DataFrame)={						// Création d'un indicateur global de pollution
+		idf
+			.agg(avg("score_pollution").as("score_moyen"))
+			.withColumn("indice_global_0_100", $"score_moyen" / 3 * 100)	// 3 = score max théorique
+			.show(truncate = false)
+	}
 	
+	
+	
+	def abnormalStats(idf: DataFrame)={				// Stations anormales par rapport à leur ligne
+		idf
+			.join(
+				idf
+					.groupBy("Nom de la ligne")
+					.agg(
+						avg("score_pollution").as("moy_ligne"),
+						stddev("score_pollution").as("sd_ligne")
+					),
+				"Nom de la ligne"
+			)
+			.withColumn(
+				"z_score",
+				($"score_pollution" - $"moy_ligne") / $"sd_ligne"
+			)
+			.filter($"z_score" > 1.5)			// Seuil à ajuster
+			.select(
+				"Nom de la Station",
+				"Nom de la ligne",
+				"score_pollution",
+				"moy_ligne",
+				"sd_ligne",
+				"z_score"
+			).orderBy(desc("z_score"))
+			.show(50, false)
+	}
+	
+	
+	
+	
+	def splitTime(pm: DataFrame): DataFrame={			// Diviser la datetime en mois (1-12), jour de la semaine (1-7), heure (0-23)
+		pm
+			.withColumn("hour", hour(col("datetime")))
+			.withColumn("dayOfWeek", dayofweek(col("datetime")))
+			.withColumn("month", month(col("datetime")))
+			.withColumn("label", col("pm").cast("double"))	
+	}
+	
+	
+	
+	def createPipeline(): (StringIndexer, OneHotEncoder, VectorAssembler)={		// Pipeline pour former les features
+		(
+			new StringIndexer()							// Changement des stations en index
+				.setInputCol("station")
+				.setOutputCol("stationIndex"),
+			new OneHotEncoder()							// Changement des index en booléens
+				.setInputCol("stationIndex")
+				.setOutputCol("stationVec"),
+			new VectorAssembler()							// Assemblage des variables temporelles et booléens vers features
+				.setInputCols(Array("hour", "dayOfWeek", "month", "stationVec"))
+				.setOutputCol("features")
+		)
+	}
+	
+	
+	
+
 
 	def main(args: Array[String]): Unit = {
 	/*
@@ -312,12 +368,13 @@ object Main2 {
 
 
 		// FlatMap - récupération du nom des lignes en IDF
+		println("=== Noms de lignes ===")
 		lineNames(idf)
 		
 		
 
 		// Statistiques descriptives : Moyenne, maximum et minimum (latitude et longitude)
-		print("=== Moyenne, maximum, minimum ===")
+		println("=== Moyenne, maximum, minimum ===")
 		descStats(idf)
 		
 
@@ -331,17 +388,12 @@ object Main2 {
 			- Création d'un indicateur global de pollution
 			- Détection automatique des anomalies dans les données
 	*/
-
-
-
-		// Variable qualitative pollution -> Variable quantitative
-		val idfQuanti = qualiToQuanti(idf)
 		
 
 
 		// a) Identification des stations les plus polluées
 		println("=== Stations les plus polluées ===")
-		mostPolluted(idfQuanti)
+		mostPolluted(idf)
 		
 		
 
@@ -350,160 +402,121 @@ object Main2 {
 		// ===== Détection de pics de pollution (PM10) =====
 		
 		// Fenêtre de 24 points vers l'arrière (par station)
-		// Si tes données sont horaires, cela correspond à ~24h
 		val w24h = Window
 			.partitionBy("station")
 			.orderBy("datetime")
 			.rowsBetween(-23, 0)	 // la ligne courante + les 23 précédentes
-
-
-
+		
 		// Afficher les 50 plus gros pics PM10
 		println("=== Pics de pollution PM10 (z-score >= 2.5) ===")
 		pollutionPeaks(pm10, w24h)
 
-
-
 		// Afficher les 50 plus gros pics PM2.5
 		println("=== Pics de pollution PM2.5 (z-score >= 2.5) ===")
 		pollutionPeaks(pm25, w24h)
-		
-		
+
+
 
 		// c) Création d'un indicateur global de pollution
 		println("=== Indicateur global de pollution ===")
-		val global = idfQuanti
-			.agg(avg("score_pollution").as("score_moyen"))
-			.withColumn("indice_global_0_100", $"score_moyen" / 3 * 100)	// 3 = score max théorique
-			.show(truncate = false)
-
-
+		globalIndic(idf)
+		
+		
 
 		// d) Détection automatique des anomalies dans les données
-		//Stations "outliers" par rapport à leur ligne
-		val statsLigne = idfQuanti
-			.groupBy("Nom de la ligne")
-			.agg(
-				avg("score_pollution").as("moy_ligne"),
-				stddev("score_pollution").as("sd_ligne")
-			)
-
-		val idfZ = idfQuanti
-			.join(statsLigne, "Nom de la ligne")
-			.withColumn("z_score",
-				($"score_pollution" - $"moy_ligne") / $"sd_ligne"
-			)
-
-		val anomaliesStations = idfZ.filter($"z_score" > 1.5) // seuil à ajuster
-
+		// Stations anormales par rapport à leur ligne
 		println("=== Stations très anormales pour leur ligne ===")
-		anomaliesStations.select(
-				"Nom de la Station",
-				"Nom de la ligne",
-				"score_pollution",
-				"moy_ligne",
-				"sd_ligne",
-				"z_score"
-			).orderBy(desc("z_score"))
-			.show(50, false)
+		abnormalStats(idf)
+		
+		
+		
+		
 			
 		// PARTIE 5
 
-		// 1) Ajout des variables temporelles sur pm10 et sur pm25
-		val pm10Feat = pm10
-			.withColumn("hour", hour(col("datetime")))
-			.withColumn("dayOfWeek", dayofweek(col("datetime")))
-			.withColumn("month", month(col("datetime")))
-			.withColumn("label", col("pm").cast("double"))
-			
-		val pm25Feat = pm25
-			.withColumn("hour", hour(col("datetime")))
-			.withColumn("dayOfWeek", dayofweek(col("datetime")))
-			.withColumn("month", month(col("datetime")))
-			.withColumn("label", col("pm").cast("double"))
-			
-		// Découpage en training set et test set
-		val Array(trainPm10, testPm10) = pm10Feat.randomSplit(Array(0.7, 0.3), seed = 42)
-		val Array(trainPm25, testPm25) = pm25Feat.randomSplit(Array(0.7, 0.3), seed = 42)
-			
-			
-
-		// 2) Définition des colonnes features
-		val categoricalCols = Array("station")  // tu pourras ajouter "Nom de la ligne" si tu l’as jointe
-		val numericCols = Array(
-			"hour",
-			"dayOfWeek",
-			"month"
-		)
+		// 1) Modification des variables temporelles sur pm10 et sur pm25
+		val pm10Feat = splitTime(pm10)
+		val pm25Feat = splitTime(pm25)
+		
+		println("=== PM10 avec variables temporelles séparées ===")
+		pm10Feat.show(truncate = false)
+		println("=== PM25 avec variables temporelles séparées ===")
+		pm25Feat.show(truncate = false)
 		
 		
 
-		// 3) Indexers pour les colonnes catégorielles
-		val indexers = new StringIndexer()
-			.setInputCol("station")
-			.setOutputCol("stationIndex")
-
-
-
-		// 4) OneHotEncoder sur ces index
-		val encoder = new OneHotEncoder()
-			.setInputCol("stationIndex")
-			.setOutputCol("stationVec")
-
-
-
-		// 5) VectorAssembler vers "features"
-		val assembler = new VectorAssembler()
-			.setInputCols(numericCols ++ Array("stationVec"))
-			.setOutputCol("features")
-	
-	
-	
-	/*
-		// 6) Pipeline de transformation
-		val featureStages: Array[PipelineStage] = Array(indexers, encoder, assembler)
-
-		val featurePipeline = new Pipeline()
-			.setStages(featureStages)
-
-		// 7) Application du pipeline
-		val featuredData = featurePipeline
+		// Pipeline pour changer les noms de stations en booléens et les assembler avec les variables temporelles
+		val (indexer, encoder, assembler) = createPipeline()
+		
+		val featureDataPm10 = new Pipeline()
+			.setStages(Array(indexer, encoder, assembler))
 			.fit(pm10Feat)
 			.transform(pm10Feat)
-			.select("hour", "dayOfWeek", "month", "stationVec", "label", "features")
+			.select(
+				"datetime",
+				"station",
+				"label",
+				"features"
+			)
+		
+		val featureDataPm25 = new Pipeline()
+			.setStages(Array(indexer, encoder, assembler))
+			.fit(pm25Feat)
+			.transform(pm25Feat)
+			.select(
+				"datetime",
+				"station",
+				"label",
+				"features"
+			)
+		
+		println("=== PM10 après pipeline ===")
+		featureDataPm10.show(truncate = false)
+		println("=== PM25 après pipeline ===")
+		featureDataPm25.show(truncate = false)
 			
-		featuredData.show()
-	*/
-	
-	
+		// Découpage en training set et test set
+		val Array(trainPm10, testPm10) = featureDataPm10.randomSplit(Array(0.7, 0.3), seed = 42)
+		val Array(trainPm25, testPm25) = featureDataPm25.randomSplit(Array(0.7, 0.3), seed = 42)
 		
-		pm10Feat.show()
-		pm25Feat.show()
-		
-		
-		
-		
-		
-		// Evaluation ?
+		// Evaluateur
 		val evaluator = new RegressionEvaluator()
 			.setLabelCol("label")
-			.setPredictionCol("label")
-			.setMetricName("rmse")
+			.setPredictionCol("prediction")
+			.setMetricName("var")
 			
 			
 
 		// 1) Régression linéaire
 		val lr = new LinearRegression()
-			.setLabelCol("label")
-			.setFeaturesCol("features")
+			.setMaxIter(10)
+			.setRegParam(0.3)
+			.setElasticNetParam(0.8)
 
-		val lrPipeline = new Pipeline().setStages(Array(indexers, encoder, assembler, lr))
+	//	val lrPipeline = new Pipeline().setStages(Array(indexer, encoder, assembler, lr))
 		
-		val lrPredPm10 = lrPipeline.fit(trainPm10).transform(testPm10)
-		val lrPredPm25 = lrPipeline.fit(trainPm25).transform(testPm25)
-
+		
+		
+		val lrModelPm10 = lr.fit(featureDataPm10)
+		println(s"=== Linear Regression Pm10 ===\nCoefficients: ${lrModelPm10.coefficients}\nIntercept: ${lrModelPm10.intercept}")
+		
+		val lrPm10Summary = lrModelPm10.summary
+		
+		
+		
+		val lrModelPm25 = lr.fit(featureDataPm25)
+		println(s"=== Linear Regression Pm25 ===\nCoefficients: ${lrModelPm25.coefficients}\nIntercept: ${lrModelPm25.intercept}")
+		
+		val lrPm25Summary = lrModelPm25.summary
+	/*	
+		val lrPredPm10 = lrModelPm10.transform(testPm10)
 		val lrRmsePm10 = evaluator.evaluate(lrPredPm10)
 		println(s"LinearRegression RMSE on pm10 = $lrRmsePm10")
+		
+		val lrModelPm25 = lrPipeline.fit(trainPm25)
+		lrModelPm25.summary.show()
+		
+		val lrPredPm25 = lrModelPm25.transform(testPm25)
 		val lrRmsePm25 = evaluator.evaluate(lrPredPm25)
 		println(s"LinearRegression RMSE on pm25 = $lrRmsePm25")
 		
@@ -514,15 +527,17 @@ object Main2 {
 			.setLabelCol("label")
 			.setFeaturesCol("features")
 
-		val dtPipeline = new Pipeline().setStages(Array(indexers, encoder, assembler, dt))
+		val dtPipeline = new Pipeline().setStages(Array(indexer, encoder, assembler, dt))
 		
 		val dtPredPm10 = dtPipeline.fit(trainPm10).transform(testPm10)
-		val dtPredPm25 = dtPipeline.fit(trainPm25).transform(testPm25)
-		
 		val dtRmsePm10 = evaluator.evaluate(dtPredPm10)
 		println(s"DecisionTreeRegressor RMSE = $dtRmsePm10")
+		
+		val dtPredPm25 = dtPipeline.fit(trainPm25).transform(testPm25)
 		val dtRmsePm25 = evaluator.evaluate(dtPredPm25)
 		println(s"DecisionTreeRegressor RMSE = $dtRmsePm25")
+		
+		
 
 		// 3) Forêt aléatoire (régression)
 		val rf = new RandomForestRegressor()
@@ -530,16 +545,16 @@ object Main2 {
 			.setFeaturesCol("features")
 			.setNumTrees(50)
 
-		val rfPipeline = new Pipeline().setStages(Array(indexers, encoder, assembler, rf))
+		val rfPipeline = new Pipeline().setStages(Array(indexer, encoder, assembler, rf))
 		
 		val rfPredPm10 = rfPipeline.fit(trainPm10).transform(testPm10)
-		val rfPredPm25 = rfPipeline.fit(trainPm25).transform(testPm25)
-		
 		val rfRmsePm10 = evaluator.evaluate(rfPredPm10)
 		println(s"RandomForestRegressor RMSE = $rfRmsePm10")
+		
+		val rfPredPm25 = rfPipeline.fit(trainPm25).transform(testPm25)
 		val rfRmsePm25 = evaluator.evaluate(rfPredPm25)
 		println(s"RandomForestRegressor RMSE = $rfRmsePm25")
-		
+	*/	
 		
 		
 	/*
@@ -642,7 +657,20 @@ object Main2 {
 			.option("truncate", "false")
 			.option("numRows", 50)
 			.start()
+		val query = anomaliesStream.writeStream
+			.format("console")
+			.outputMode("update")      // pas de sort global, donc "update" OK
+			.option("truncate", "false")
+			.option("numRows", 50)
+			.start()
 
+		query.awaitTermination()
+	*/
+
+		//Arrêt de Spark
+		spark.stop()
+	}
+}
 		query.awaitTermination()
 	*/
 

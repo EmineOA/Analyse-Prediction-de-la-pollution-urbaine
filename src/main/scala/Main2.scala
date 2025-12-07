@@ -4,7 +4,8 @@ import org.apache.spark.sql.types._
 import org.apache.spark.sql.expressions.{Window, WindowSpec}
 import org.apache.spark.sql.functions.{window, stddev_pop}
 import org.apache.spark.ml.{Pipeline, PipelineStage}
-import org.apache.spark.ml.feature.{StringIndexer, OneHotEncoder, VectorAssembler}
+import org.apache.spark.ml.feature.{StringIndexer, OneHotEncoder, StandardScaler, VectorAssembler}
+import org.apache.spark.ml.functions.vector_to_array
 import org.apache.spark.ml.regression._
 import org.apache.spark.ml.evaluation.RegressionEvaluator
 
@@ -18,6 +19,7 @@ object Main2 {
 	val spark = SparkSession.builder()
 		.appName("Qualite_Air")
 		.master("local[*]")
+		.config("spark.serializer", "org.apache.spark.serializer.JavaSerializer")	// Kyro pose des problèmes
 		.getOrCreate()
 
 	//Imports complémentaires
@@ -287,15 +289,27 @@ object Main2 {
 	
 	def splitTime(pm: DataFrame): DataFrame={			// Diviser la datetime en mois (1-12), jour de la semaine (1-7), heure (0-23)
 		pm
-			.withColumn("hour", hour(col("datetime")))
-			.withColumn("dayOfWeek", dayofweek(col("datetime")))
-			.withColumn("month", month(col("datetime")))
-			.withColumn("label", col("pm").cast("double"))	
+			.withColumn(
+				"hour",
+				hour(col("datetime"))
+			)
+			.withColumn(
+				"dayOfWeek",
+				dayofweek(col("datetime"))
+			)
+			.withColumn(
+				"month",
+				month(col("datetime"))
+			)
+			.withColumn(
+				"label",
+				col("pm").cast("double")
+			)
 	}
 	
 	
 	
-	def createPipeline(): (StringIndexer, OneHotEncoder, VectorAssembler)={		// Pipeline pour former les features
+	def createPipeline(): (StringIndexer, OneHotEncoder, VectorAssembler, StandardScaler, VectorAssembler, StandardScaler, VectorAssembler, StandardScaler, VectorAssembler)={										// Pipeline pour former les features
 		(
 			new StringIndexer()							// Changement des stations en index
 				.setInputCol("station")
@@ -303,8 +317,26 @@ object Main2 {
 			new OneHotEncoder()							// Changement des index en booléens
 				.setInputCol("stationIndex")
 				.setOutputCol("stationVec"),
+			new VectorAssembler()							// Transformation en vecteur des variables à standardiser
+				.setInputCols(Array("hour"))
+				.setOutputCol("hourVec"),
+			new StandardScaler()							// Standardisation des variables
+				.setInputCol("hourVec")
+				.setOutputCol("hourScaled"),
+			new VectorAssembler()
+				.setInputCols(Array("dayOfWeek"))
+				.setOutputCol("dayVec"),
+			new StandardScaler()
+				.setInputCol("dayVec")
+				.setOutputCol("dayScaled"),
+			new VectorAssembler()
+				.setInputCols(Array("month"))
+				.setOutputCol("monthVec"),
+			new StandardScaler()
+				.setInputCol("monthVec")
+				.setOutputCol("monthScaled"),
 			new VectorAssembler()							// Assemblage des variables temporelles et booléens vers features
-				.setInputCols(Array("hour", "dayOfWeek", "month", "stationVec"))
+				.setInputCols(Array("hourScaled", "dayScaled", "monthScaled", "stationVec"))
 				.setOutputCol("features")
 		)
 	}
@@ -445,25 +477,31 @@ object Main2 {
 		
 
 		// Pipeline pour changer les noms de stations en booléens et les assembler avec les variables temporelles
-		val (indexer, encoder, assembler) = createPipeline()
+		val (indexer, encoder, hourVec, hourStd, dayVec, dayStd, monthVec, monthStd, assembler) = createPipeline()
 		
 		val featureDataPm10 = new Pipeline()
-			.setStages(Array(indexer, encoder, assembler))
+			.setStages(Array(indexer, encoder, hourVec, hourStd, dayVec, dayStd, monthVec, monthStd, assembler))
 			.fit(pm10Feat)
 			.transform(pm10Feat)
 			.select(
 				"datetime",
+				"hour",
+				"dayOfWeek",
+				"month",
 				"station",
 				"label",
 				"features"
 			)
 		
 		val featureDataPm25 = new Pipeline()
-			.setStages(Array(indexer, encoder, assembler))
+			.setStages(Array(indexer, encoder, hourVec, hourStd, dayVec, dayStd, monthVec, monthStd, assembler))
 			.fit(pm25Feat)
 			.transform(pm25Feat)
 			.select(
 				"datetime",
+				"hour",
+				"dayOfWeek",
+				"month",
 				"station",
 				"label",
 				"features"
@@ -473,16 +511,24 @@ object Main2 {
 		featureDataPm10.show(truncate = false)
 		println("=== PM25 après pipeline ===")
 		featureDataPm25.show(truncate = false)
-			
-		// Découpage en training set et test set
-		val Array(trainPm10, testPm10) = featureDataPm10.randomSplit(Array(0.7, 0.3), seed = 42)
-		val Array(trainPm25, testPm25) = featureDataPm25.randomSplit(Array(0.7, 0.3), seed = 42)
 		
-		// Evaluateur
-		val evaluator = new RegressionEvaluator()
-			.setLabelCol("label")
-			.setPredictionCol("prediction")
-			.setMetricName("var")
+		println("=== Features de PM10 ===")
+		featureDataPm10
+			.withColumn(
+				"features_dense",
+				vector_to_array($"features")
+			)
+			.select("features_dense")
+			.show(false)
+		
+		println("=== Features de PM25 ===")
+		featureDataPm25
+			.withColumn(
+				"features_dense",
+				vector_to_array($"features")
+			)
+			.select("features_dense")
+			.show(false)
 			
 			
 
@@ -491,33 +537,49 @@ object Main2 {
 			.setMaxIter(10)
 			.setRegParam(0.3)
 			.setElasticNetParam(0.8)
-
-	//	val lrPipeline = new Pipeline().setStages(Array(indexer, encoder, assembler, lr))
+			.setLabelCol("label")
+			.setFeaturesCol("features")
 		
 		
 		
 		val lrModelPm10 = lr.fit(featureDataPm10)
-		println(s"=== Linear Regression Pm10 ===\nCoefficients: ${lrModelPm10.coefficients}\nIntercept: ${lrModelPm10.intercept}")
+		println(s"\n\n\n=== Linear Regression Pm10 ===\nCoefficients: ${lrModelPm10.coefficients}\nIntercept: ${lrModelPm10.intercept}")
 		
 		val lrPm10Summary = lrModelPm10.summary
+		println(s"numIterations: ${lrPm10Summary.totalIterations}")
+		println(s"objectiveHistory: [${lrPm10Summary.objectiveHistory.mkString(",")}]")
+		lrPm10Summary.residuals.show()
+		println(s"RMSE: ${lrPm10Summary.rootMeanSquaredError}")
+		println(s"r2: ${lrPm10Summary.r2}")
 		
 		
 		
 		val lrModelPm25 = lr.fit(featureDataPm25)
-		println(s"=== Linear Regression Pm25 ===\nCoefficients: ${lrModelPm25.coefficients}\nIntercept: ${lrModelPm25.intercept}")
+		println(s"\n\n\n=== Linear Regression Pm25 ===\nCoefficients: ${lrModelPm25.coefficients}\nIntercept: ${lrModelPm25.intercept}")
 		
 		val lrPm25Summary = lrModelPm25.summary
-	/*	
-		val lrPredPm10 = lrModelPm10.transform(testPm10)
-		val lrRmsePm10 = evaluator.evaluate(lrPredPm10)
-		println(s"LinearRegression RMSE on pm10 = $lrRmsePm10")
+		println(s"numIterations: ${lrPm25Summary.totalIterations}")
+		println(s"objectiveHistory: [${lrPm25Summary.objectiveHistory.mkString(",")}]")
+		lrPm25Summary.residuals.show()
+		println(s"RMSE: ${lrPm25Summary.rootMeanSquaredError}")
+		println(s"r2: ${lrPm25Summary.r2}")
+	
 		
-		val lrModelPm25 = lrPipeline.fit(trainPm25)
-		lrModelPm25.summary.show()
+			
+		// Découpage en training set et test set
+		val Array(trainPm10, testPm10) = pm10Feat.randomSplit(Array(0.7, 0.3), seed = 42)
+		val Array(trainPm25, testPm25) = pm25Feat.randomSplit(Array(0.7, 0.3), seed = 42)
 		
-		val lrPredPm25 = lrModelPm25.transform(testPm25)
-		val lrRmsePm25 = evaluator.evaluate(lrPredPm25)
-		println(s"LinearRegression RMSE on pm25 = $lrRmsePm25")
+		// Evaluateurs
+		val evaluatorRMSE = new RegressionEvaluator()
+			.setLabelCol("label")
+			.setPredictionCol("prediction")
+			.setMetricName("rmse")
+			
+		val evaluatorR2 = new RegressionEvaluator()
+			.setLabelCol("label")
+			.setPredictionCol("prediction")
+			.setMetricName("r2")
 		
 		
 		
@@ -526,15 +588,31 @@ object Main2 {
 			.setLabelCol("label")
 			.setFeaturesCol("features")
 
-		val dtPipeline = new Pipeline().setStages(Array(indexer, encoder, assembler, dt))
+		val dtPipeline = new Pipeline().setStages(Array(indexer, encoder, hourVec, hourStd, dayVec, dayStd, monthVec, monthStd, assembler, dt))
 		
-		val dtPredPm10 = dtPipeline.fit(trainPm10).transform(testPm10)
-		val dtRmsePm10 = evaluator.evaluate(dtPredPm10)
-		println(s"DecisionTreeRegressor RMSE = $dtRmsePm10")
+		val dtModelPm10 = dtPipeline.fit(trainPm10)
+		val dtPredPm10 = dtModelPm10.transform(testPm10)
 		
-		val dtPredPm25 = dtPipeline.fit(trainPm25).transform(testPm25)
-		val dtRmsePm25 = evaluator.evaluate(dtPredPm25)
-		println(s"DecisionTreeRegressor RMSE = $dtRmsePm25")
+		println("\n\n\n=== Decision Tree PM10 ===")
+		dtPredPm10
+			.select("datetime", "station", "label", "prediction")
+			.show(50, false)
+		val dtRmsePm10 = evaluatorRMSE.evaluate(dtPredPm10)
+		println(s"RMSE : $dtRmsePm10")
+		val dtR2Pm10 = evaluatorR2.evaluate(dtPredPm10)
+		println(s"R2 : $dtR2Pm10")
+		
+		val dtModelPm25 = dtPipeline.fit(trainPm25)
+		val dtPredPm25 = dtModelPm25.transform(testPm25)
+		
+		println("\n\n\n=== Decision Tree PM25 ===")
+		dtPredPm25
+			.select("datetime", "station", "label", "prediction")
+			.show(50, false)
+		val dtRmsePm25 = evaluatorRMSE.evaluate(dtPredPm25)
+		println(s"RMSE : $dtRmsePm25")
+		val dtR2Pm25 = evaluatorR2.evaluate(dtPredPm25)
+		println(s"R2 : $dtR2Pm25")
 		
 		
 
@@ -544,16 +622,33 @@ object Main2 {
 			.setFeaturesCol("features")
 			.setNumTrees(50)
 
-		val rfPipeline = new Pipeline().setStages(Array(indexer, encoder, assembler, rf))
+		val rfPipeline = new Pipeline().setStages(Array(indexer, encoder, hourVec, hourStd, dayVec, dayStd, monthVec, monthStd, assembler, rf))
 		
-		val rfPredPm10 = rfPipeline.fit(trainPm10).transform(testPm10)
-		val rfRmsePm10 = evaluator.evaluate(rfPredPm10)
-		println(s"RandomForestRegressor RMSE = $rfRmsePm10")
+		val rfModelPm10 = rfPipeline.fit(trainPm10)
+		val rfPredPm10 = rfModelPm10.transform(testPm10)
 		
-		val rfPredPm25 = rfPipeline.fit(trainPm25).transform(testPm25)
-		val rfRmsePm25 = evaluator.evaluate(rfPredPm25)
-		println(s"RandomForestRegressor RMSE = $rfRmsePm25")
-	*/	
+		println("\n\n\n=== Random Forest PM10 ===")
+		rfPredPm10
+			.select("datetime", "station", "label", "prediction")
+			.show(50, false)
+		val rfRmsePm10 = evaluatorRMSE.evaluate(rfPredPm10)
+		println(s"RMSE : $rfRmsePm10")
+		val rfR2Pm10 = evaluatorR2.evaluate(rfPredPm10)
+		println(s"R2 : $rfR2Pm10")
+		
+		
+		
+		val rfModelPm25 = rfPipeline.fit(trainPm25)
+		val rfPredPm25 = rfModelPm25.transform(testPm25)
+		
+		println("\n\n\n=== Random Forest PM25 ===")
+		rfPredPm25
+			.select("datetime", "station", "label", "prediction")
+			.show(50, false)
+		val rfRmsePm25 = evaluatorRMSE.evaluate(rfPredPm25)
+		println(s"RMSE : $rfRmsePm25")
+		val rfR2Pm25 = evaluatorR2.evaluate(rfPredPm25)
+		println(s"R2 : $rfR2Pm25")
 		
 		
 	/*
@@ -656,20 +751,7 @@ object Main2 {
 			.option("truncate", "false")
 			.option("numRows", 50)
 			.start()
-		val query = anomaliesStream.writeStream
-			.format("console")
-			.outputMode("update")      // pas de sort global, donc "update" OK
-			.option("truncate", "false")
-			.option("numRows", 50)
-			.start()
 
-		query.awaitTermination()
-	*/
-
-		//Arrêt de Spark
-		spark.stop()
-	}
-}
 		query.awaitTermination()
 	*/
 

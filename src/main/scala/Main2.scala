@@ -7,7 +7,6 @@ import org.apache.spark.ml.{Pipeline, PipelineStage}
 import org.apache.spark.ml.feature.{StringIndexer, OneHotEncoder, VectorAssembler}
 import org.apache.spark.ml.regression._
 import org.apache.spark.ml.evaluation.RegressionEvaluator
-import Console._
 
 //VM options: --add-exports=java.base/sun.nio.ch=ALL-UNNAMED
 //-Dhadoop.home.dir=C:\\Users\\Administrateur\\IdeaProjects\\untitled1\\hadoop

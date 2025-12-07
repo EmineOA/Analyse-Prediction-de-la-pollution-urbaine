@@ -1,8 +1,32 @@
 import org.apache.spark.sql.SparkSession
+import org.apache.spark.sql.functions._
+import org.apache.spark.sql.types._
+import org.apache.spark.sql.Row
 import org.apache.spark.graphx._
 import java.io._
 
 object Graphe {
+
+  // Reconstruit des noms de colonnes uniques à partir de la 3e ligne de pm10/pm25
+  def buildUniqueColNames(headerRow: Row, firstName: String = "datetime"): Array[String] = {
+    val seen = scala.collection.mutable.Map[String, Int]()
+    headerRow.toSeq.zipWithIndex.map {
+      case (value, idx) =>
+        if (idx == 0) {
+          firstName
+        } else {
+          val raw  = Option(value).map(_.toString.trim).getOrElse("")
+          val base =
+            if (raw.isEmpty) s"col_$idx"
+            else raw.replaceAll("[^A-Za-z0-9_-]", "_")
+
+          val count = seen.getOrElse(base, 0)
+          seen.update(base, count + 1)
+
+          if (count == 0) base else s"${base}_$count"
+        }
+    }.toArray
+  }
 
   def main(args: Array[String]): Unit = {
 
@@ -158,8 +182,80 @@ object Graphe {
     )
 
     val graph = Graph(vertices, edges)
+    import spark.implicits._
 
-    // === 3. Palette de couleurs façon "tab20" ===
+    // =====================================================================
+    // 3. Lecture de idf_data.csv et calcul d'un score de pollution par station
+    // =====================================================================
+
+    val idfPath = "./data/idf_data.csv"
+
+    // Même schéma que dans ton main.scala
+    val schema = StructType(Seq(
+      StructField("Identifiant station", StringType, true),
+      StructField("Nom de la Station", StringType, true),
+      StructField("Nom de la ligne", StringType, true),
+      StructField("Niveau de pollution", StringType, true),
+      StructField("Recommandation de surveillance", StringType, true),
+      StructField("stop_lon", DoubleType, true),
+      StructField("stop_lat", DoubleType, true),
+      StructField("pollution_air", StringType, true)
+    ))
+
+    val df = spark.read
+      .format("csv")
+      .option("sep", ";")
+      .option("header", "true")
+      .schema(schema)
+      .load(idfPath)
+
+    // Encodage ordinal sur la variable catégorielle "Niveau de pollution"
+    val dfScored = df.withColumn(
+      "score_pollution",
+      when($"Niveau de pollution" === "FAIBLE",   lit(1))
+        .when($"Niveau de pollution" === "MOYENNE", lit(2))
+        .when($"Niveau de pollution" === "ELEVE",   lit(3))
+        .when($"Niveau de pollution" === "station aérienne", lit(0))
+        .otherwise(lit(null).cast("int"))
+    )
+
+    // Moyenne du score par station
+    val pollutionByStation: Map[String, Double] =
+      dfScored
+        .groupBy($"Nom de la Station".as("station"))
+        .agg(avg($"score_pollution").as("pollution_score"))
+        .where($"pollution_score".isNotNull)
+        .select($"station", $"pollution_score".cast("double"))
+        .as[(String, Double)]
+        .collect()
+        .toMap
+
+    println(s"Stations avec un score de pollution = ${pollutionByStation.size}")
+
+    // =====================================================================
+    // 4. Graphe dont l'attribut de sommet = pollution locale initiale
+    // =====================================================================
+
+    val pollutionRDD = sc.parallelize(
+      pollutionByStation.toSeq.collect {
+        case (stationName, value) if stationToId.contains(stationName) =>
+          (stationToId(stationName).toLong, value)
+      }
+    )
+
+    println(s"Stations effectivement mappées sur le graphe = ${pollutionRDD.count()}")
+
+    // graph : Graph[String, String]  (nomStation, ligne)
+    // g     : Graph[Double, String]  (pollution, ligne)
+    var g: Graph[Double, String] =
+      graph.outerJoinVertices(pollutionRDD) {
+        case (_, _, pollutionOpt) => pollutionOpt.getOrElse(0.0)
+      }
+
+    // =====================================================================
+    // 5. Palette de couleurs pour les lignes (pour les arêtes)
+    // =====================================================================
+
     val couleurs = Array(
       "#1f77b4","#ff7f0e","#2ca02c","#d62728","#9467bd",
       "#8c564b","#e377c2","#7f7f7f","#bcbd22","#17becf",
@@ -177,35 +273,107 @@ object Graphe {
       }
     }
 
-    // === 4. Génération DOT ===
-    val out = new PrintWriter(new File("metro.dot"))
+    // =====================================================================
+    // 6. Diffusion de la pollution (style Pregel) + DOT par itération
+    // =====================================================================
 
-    out.println("""
-                  |graph metro {
-                  |  graph [overlap=false, layout=sfdp, fontsize=350, label="Graphe du métro parisien", size="20,20", dpi=1100];
-                  |  node  [shape=circle, fontsize=10, style=filled, fillcolor="#DDDDDD", width=0.2, height=0.2];
-                  |  edge  [penwidth=1];
-                  |""".stripMargin)
+    val alpha   = 0.10   // coefficient de diffusion
+    val maxIter = 5      // nombre d'itérations
 
-    // Noeuds
-    vertices.collect().foreach { case (id, name) =>
-      val label = name.replace("\"", "'")
-      out.println(s"""  $id [label="$label"];""")
+    val verticesLocal = vertices.collect().toMap   // id -> nom
+    val edgesLocal    = edges.collect()
+
+    def writeDotForIteration(iter: Int, currentGraph: Graph[Double, String]): Unit = {
+      val scores = currentGraph.vertices.collect().toMap
+      val nonZeroVals = scores.values.filter(_ > 0.0)
+
+      if (nonZeroVals.nonEmpty) {
+        val minP = nonZeroVals.min
+        val maxP = nonZeroVals.max
+
+        println(s"[Iter $iter] minP>0 = $minP, maxP>0 = $maxP")
+
+        def colorFromPoll(x: Double): String = {
+          if (x <= 0.0) {
+            "#DDDDDD"  // stations sans pollution mesurée
+          } else {
+            val r0 =
+              if (maxP == minP) 0.0
+              else (x - minP) / (maxP - minP)
+
+            val r = math.max(0.0, math.min(1.0, r0))
+            val red   = (255 * r).toInt
+            val green = (255 * (1 - r)).toInt
+            f"#$red%02x$green%02x00"  // gradient vert -> rouge
+          }
+        }
+
+        val fileName = s"metro_iter_$iter.dot"
+        val outIter  = new PrintWriter(new File(fileName))
+
+        outIter.println(
+          s"""
+             |graph metro {
+             |  graph [overlap=false,
+             |         layout=sfdp,
+             |         fontsize=20,
+             |         label="Diffusion de la pollution (idf_data) - itération $iter",
+             |         labelloc="t",
+             |         size="20,20",
+             |         dpi=300];
+             |  node  [shape=circle, fontsize=8, style=filled, width=0.2, height=0.2];
+             |  edge  [penwidth=1];
+             |""".stripMargin
+        )
+
+        // Noeuds : couleur = pollution propagée
+        verticesLocal.foreach { case (id, name) =>
+          val label = name.replace("\"", "'")
+          val p     = scores.getOrElse(id, 0.0)
+          val col   = colorFromPoll(p)
+          outIter.println(s"""  $id [label="$label", fillcolor="$col"];""")
+        }
+
+        // Arêtes colorées par ligne
+        edgesLocal.foreach { e =>
+          val col = couleurLigne(e.attr)
+          outIter.println(s"""  ${e.srcId} -- ${e.dstId} [color="$col", label="${e.attr}"];""")
+        }
+
+        outIter.println("}")
+        outIter.close()
+
+        println(s"Fichier DOT généré pour l'itération $iter : $fileName")
+      } else {
+        println(s"[Iter $iter] Attention : aucune station avec pollution > 0.")
+      }
     }
 
-    // Arêtes colorées
-    edges.collect().foreach { e =>
-      val col = couleurLigne(e.attr)
-      out.println(s"""  ${e.srcId} -- ${e.dstId} [color="$col", label="${e.attr}"];""")
+    // Boucle de diffusion (type Pregel "déroulé")
+    for (iter <- 0 to maxIter) {
+      // 1) Écriture du graphe à l'état courant
+      writeDotForIteration(iter, g)
+
+      // 2) Propagation pour l'itération suivante
+      if (iter < maxIter) {
+        val messages = g.aggregateMessages[Double](
+          triplet => {
+            // chaque station envoie alpha * sa pollution à ses voisines
+            triplet.sendToDst(triplet.srcAttr * alpha)
+            triplet.sendToSrc(triplet.dstAttr * alpha)
+          },
+          _ + _
+        )
+
+        g = g.joinVertices(messages) {
+          case (_, currentPoll, receivedPoll) => currentPoll + receivedPoll
+        }
+      }
     }
 
-    out.println("}")
-    out.close()
-
-    println("Fichier DOT généré : metro.dot")
-    println("Génère l’image avec :")
-    println("dot -K sfdp -Tpng metro.dot -o metro.png")
+    println(s"Diffusion terminée. DOT générés : metro_iter_0.dot ... metro_iter_$maxIter.dot")
 
     spark.stop()
+
   }
 }

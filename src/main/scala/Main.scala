@@ -79,32 +79,30 @@ object Main {
 
 		val pm10_raw = spark.read
 			.format("csv")
-			.option("header", false)
+			.option("header", false) //Le traitement sera fait manuellement (cf. suite)
 			.option("sep", ",")
-			.option("inferSchema", "false") //typage automatique - à vérifier
 			.load(pm10Path)
 
 		val pm25_raw = spark.read
 			.format("csv")
-			.option("header", false)
+			.option("header", false) //idem
 			.option("sep", ",")
-			.option("inferSchema", "false")
 			.load(pm25Path)
 
 		//println("Nombres de lignes avant nettoyage : " + df.count())
 
-		//Suppression des doublons et des valeurs manquantes
+		//Suppression des doublons et valeurs manquantes - on conservera les dataset d'origine dans la suite
 		val df_cleaned = df.na.drop().dropDuplicates()
 		val pm10_cleaned = pm10_raw.drop().dropDuplicates()
 		val pm25_cleaned = pm25_raw.drop().dropDuplicates()
 
 		//println("Nombres de lignes après nettoyage : " + df.count())
 
-		// Liste de stations pour la simulation en temps réel
+		// Récupération de 20 stations pour le traitement en temps réel
 		val stationsList = df
 			.select($"Nom de la Station")
 			.distinct()
-			.limit(20) // on ne garde que 20 stations pour éviter un tableau énorme
+			.limit(20)
 			.as[String]
 			.collect()
 			.toSeq
@@ -181,7 +179,7 @@ object Main {
 		val pollution = pm10Long
 			.join(pm25Long, Seq("datetime", "station"), "outer")
 
-		pollution.show(20, truncate = false)
+		pollution.show(20, truncate = false) //permet de ne pas mettre de ... si un nom est trop long
 
 		/*
 		2) Transformation et exploration fonctionnelle
@@ -266,17 +264,17 @@ object Main {
 				- Détection automatique des anomalies dans les données
 		 */
 
-		//Variable qualitative pollution -> Variable quantitative
+		//Encodage ordinal sur la variable catégorielle score_pollution
 		val dfScored = df.withColumn(
 			"score_pollution",
 			when($"Niveau de pollution" === "FAIBLE",	 lit(1))
 				.when($"Niveau de pollution" === "MOYENNE", lit(2))
 				.when($"Niveau de pollution" === "ELEVE",	 lit(3))
-				.when($"Niveau de pollution" === "station aérienne",	lit(0)) // ou null si tu préfères
+				.when($"Niveau de pollution" === "station aérienne",	lit(0))
 				.otherwise(lit(null).cast("int"))
 		)
 
-		//a) Identification des stations les plus exposées les plus pollués
+		//a) Identification des stations les plus pollués
 		val stationsExpo = dfScored
 			.groupBy("Nom de la Station", "Nom de la ligne")
 			.agg(
@@ -285,10 +283,10 @@ object Main {
 			)
 			.orderBy(desc("score_moyen"), desc("score_max"))
 
-		println("=== Stations les plus exposées ===")
+		println("=== Stations les plus exposées à la pollution ===")
 		stationsExpo.show(20, truncate = false)
 
-		//b) Détection des pics horaires et périodes critiques (utilise un dataset complémentaire)
+		//b) Détection des pics horaires et périodes critiques avec PM10 et PM25
 
 		// ===== Détection de pics de pollution (PM10) =====
 		// On ne garde que les lignes où PM10 est défini
@@ -370,7 +368,7 @@ object Main {
 				($"score_pollution" - $"moy_ligne") / $"sd_ligne"
 			)
 
-		val anomaliesStations = dfZ.filter($"z_score" > 1.5) // seuil à ajuster
+		val anomaliesStations = dfZ.filter($"z_score" > 1.75)
 
 		println("=== Stations très anormales pour leur ligne ===")
 		anomaliesStations.select(
@@ -417,7 +415,7 @@ object Main {
 			.withColumn("pm10", expr("20 + rand() * 80"))  // ≈ [20, 100]
 			.withColumn("pm25", expr("10 + rand() * 50"))  // ≈ [10, 60]
 			.select("datetime", "station", "pm10", "pm25")
-	
+
 		// 2) Fenêtres temporelles par station
 		// Fenêtre courte (30 s) glissant toutes les 10 s pour voir rapidement des résultats
 		val windowedStats = sensorStream
@@ -445,7 +443,7 @@ object Main {
 				when($"pm25_std" > 0, ($"pm25_max" - $"pm25_mean") / $"pm25_std")
 					.otherwise(lit(0.0))
 			)
-	
+
 		// 4) Anomalies : fenêtres où le max s'écarte fortement de la moyenne
 		// Seuil "gentil" (1.0) pour voir quelque chose en simulation
 		// z-score plus agressif
@@ -464,7 +462,7 @@ object Main {
 				$"pm25_std",
 				$"pm25_zscore"
 			)
-	
+
 		// 5) Sortie console en temps réel
 		val query = anomaliesStream.writeStream
 			.format("console")
@@ -479,4 +477,3 @@ object Main {
 		spark.stop()
 	}
 }
-

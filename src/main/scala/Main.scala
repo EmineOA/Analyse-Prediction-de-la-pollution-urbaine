@@ -395,11 +395,9 @@ object Main {
 		// 1) Flux "capteurs" simulé avec la source rate
 		val rawStream = spark.readStream
 			.format("rate")
-			.option("rowsPerSecond", 10)   // tu peux augmenter / diminuer
-			.load()                        // colonnes : timestamp, value
-
-		// On réutilise une liste de stations (définie plus haut dans ton code)
-		// stationsList : Seq[String]
+			.option("rowsPerSecond", 10)   
+			.load()                        
+    
 		val stationsArrayCol = array(stationsList.map(lit(_)):_*)
 
 		val sensorStream = rawStream
@@ -412,14 +410,13 @@ object Main {
 			element_at(stationsArrayCol, $"station_index" + 1)
 			)
 			// PM10 et PM25 simulées (distributions uniformes)
-			.withColumn("pm10", expr("20 + rand() * 80"))  // ≈ [20, 100]
-			.withColumn("pm25", expr("10 + rand() * 50"))  // ≈ [10, 60]
+			.withColumn("pm10", expr("20 + rand() * 80"))  
+			.withColumn("pm25", expr("10 + rand() * 50"))  
 			.select("datetime", "station", "pm10", "pm25")
 
 		// 2) Fenêtres temporelles par station
 		// Fenêtre courte (30 s) glissant toutes les 10 s pour voir rapidement des résultats
 		val windowedStats = sensorStream
-			// .withWatermark("datetime", "10 minutes") // tu pourras le remettre si tu veux parler de retard
 			.groupBy(
 				window($"datetime", "30 seconds", "10 seconds"),
 				$"station"
@@ -445,8 +442,6 @@ object Main {
 			)
 
 		// 4) Anomalies : fenêtres où le max s'écarte fortement de la moyenne
-		// Seuil "gentil" (1.0) pour voir quelque chose en simulation
-		// z-score plus agressif
 		val anomaliesStream = windowedStats
 			.filter($"pm10_zscore" >= 1.75 || $"pm25_zscore" >= 1.75)
 			.select(
@@ -466,7 +461,7 @@ object Main {
 		// 5) Sortie console en temps réel
 		val query = anomaliesStream.writeStream
 			.format("console")
-			.outputMode("update")      // pas de sort global, donc "update" OK
+			.outputMode("update")     
 			.option("truncate", "false")
 			.option("numRows", 50)
 			.start()
@@ -477,3 +472,4 @@ object Main {
 		spark.stop()
 	}
 }
+

@@ -18,7 +18,6 @@ object Main2 {
 	val spark = SparkSession.builder()
 		.appName("Qualite_Air")
 		.master("local[*]")
-		.config("spark.serializer", "org.apache.spark.serializer.JavaSerializer")	// Kyro pose des problèmes
 		.getOrCreate()
 
 	//Imports complémentaires

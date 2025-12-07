@@ -543,8 +543,57 @@ object Main2 {
 		
 		
 		val lrModelPm10 = lr.fit(featureDataPm10)
-		println(s"\n\n\n=== Linear Regression Pm10 ===\nCoefficients: ${lrModelPm10.coefficients}\nIntercept: ${lrModelPm10.intercept}")
+		val lrPredPm10 = lrModelPm10
+			.transform(featureDataPm10)
+			.select(
+				"station",
+				"datetime",
+				"label",
+				"prediction"
+			)
+			
+		println("\n\n\n=== Linear Regression PM10 ===")
+		lrPredPm10.show(20)
 		
+		
+		
+		println("=== Best Predictions LR PM10 ===")
+		lrPredPm10
+			.withColumn(
+				"error",
+				abs($"prediction" - $"label")
+			)
+			.orderBy("error")
+			.select(
+				"station",
+				"datetime",
+				"label",
+				"prediction",
+				"error"
+			)
+			.show(10)
+		
+		
+		
+		println("=== Worst Predictions LR PM10 ===")
+		lrPredPm10
+			.withColumn(
+				"error",
+				abs($"prediction" - $"label")
+			)
+			.orderBy(desc("error"))
+			.select(
+				"station",
+				"datetime",
+				"label",
+				"prediction",
+				"error"
+			)
+			.show(10)
+			
+			
+			
+		println(s"Coefficients: ${lrModelPm10.coefficients}\nIntercept: ${lrModelPm10.intercept}")
 		val lrPm10Summary = lrModelPm10.summary
 		println(s"numIterations: ${lrPm10Summary.totalIterations}")
 		println(s"objectiveHistory: [${lrPm10Summary.objectiveHistory.mkString(",")}]")
@@ -555,8 +604,57 @@ object Main2 {
 		
 		
 		val lrModelPm25 = lr.fit(featureDataPm25)
-		println(s"\n\n\n=== Linear Regression Pm25 ===\nCoefficients: ${lrModelPm25.coefficients}\nIntercept: ${lrModelPm25.intercept}")
+		val lrPredPm25 = lrModelPm25
+			.transform(featureDataPm25)
+			.select(
+				"station",
+				"datetime",
+				"label",
+				"prediction"
+			)
+			
+		println("\n\n\n=== Linear Regression PM25 ===")
+		lrPredPm25.show(20)
 		
+		
+		
+		println("=== Best Predictions LR PM25 ===")
+		lrPredPm25
+			.withColumn(
+				"error",
+				abs($"prediction" - $"label")
+			)
+			.orderBy("error")
+			.select(
+				"station",
+				"datetime",
+				"label",
+				"prediction",
+				"error"
+			)
+			.show(10)
+		
+		
+		
+		println("=== Worst Predictions LR PM25 ===")
+		lrPredPm25
+			.withColumn(
+				"error",
+				abs($"prediction" - $"label")
+			)
+			.orderBy(desc("error"))
+			.select(
+				"station",
+				"datetime",
+				"label",
+				"prediction",
+				"error"
+			)
+			.show(10)
+			
+			
+		
+		println(s"Coefficients: ${lrModelPm25.coefficients}\nIntercept: ${lrModelPm25.intercept}")
 		val lrPm25Summary = lrModelPm25.summary
 		println(s"numIterations: ${lrPm25Summary.totalIterations}")
 		println(s"objectiveHistory: [${lrPm25Summary.objectiveHistory.mkString(",")}]")
@@ -597,10 +695,51 @@ object Main2 {
 		dtPredPm10
 			.select("datetime", "station", "label", "prediction")
 			.show(50, false)
+		
+		
+		
+		println("=== Best Predictions DT PM10 ===")
+		dtPredPm10
+			.withColumn(
+				"error",
+				abs($"prediction" - $"label")
+			)
+			.orderBy("error")
+			.select(
+				"station",
+				"datetime",
+				"label",
+				"prediction",
+				"error"
+			)
+			.show(10)
+		
+		
+		
+		println("=== Worst Predictions DT PM10 ===")
+		dtPredPm10
+			.withColumn(
+				"error",
+				abs($"prediction" - $"label")
+			)
+			.orderBy(desc("error"))
+			.select(
+				"station",
+				"datetime",
+				"label",
+				"prediction",
+				"error"
+			)
+			.show(10)
+			
+			
+			
 		val dtRmsePm10 = evaluatorRMSE.evaluate(dtPredPm10)
 		println(s"RMSE : $dtRmsePm10")
 		val dtR2Pm10 = evaluatorR2.evaluate(dtPredPm10)
 		println(s"R2 : $dtR2Pm10")
+		
+		
 		
 		val dtModelPm25 = dtPipeline.fit(trainPm25)
 		val dtPredPm25 = dtModelPm25.transform(testPm25)
@@ -609,6 +748,45 @@ object Main2 {
 		dtPredPm25
 			.select("datetime", "station", "label", "prediction")
 			.show(50, false)
+		
+		
+		
+		println("=== Best Predictions DT PM25 ===")
+		dtPredPm10
+			.withColumn(
+				"error",
+				abs($"prediction" - $"label")
+			)
+			.orderBy("error")
+			.select(
+				"station",
+				"datetime",
+				"label",
+				"prediction",
+				"error"
+			)
+			.show(10)
+		
+		
+		
+		println("=== Worst Predictions DT PM25 ===")
+		dtPredPm10
+			.withColumn(
+				"error",
+				abs($"prediction" - $"label")
+			)
+			.orderBy(desc("error"))
+			.select(
+				"station",
+				"datetime",
+				"label",
+				"prediction",
+				"error"
+			)
+			.show(10)
+			
+			
+			
 		val dtRmsePm25 = evaluatorRMSE.evaluate(dtPredPm25)
 		println(s"RMSE : $dtRmsePm25")
 		val dtR2Pm25 = evaluatorR2.evaluate(dtPredPm25)
@@ -631,6 +809,45 @@ object Main2 {
 		rfPredPm10
 			.select("datetime", "station", "label", "prediction")
 			.show(50, false)
+		
+		
+		
+		println("=== Best Predictions RF PM10 ===")
+		rfPredPm10
+			.withColumn(
+				"error",
+				abs($"prediction" - $"label")
+			)
+			.orderBy("error")
+			.select(
+				"station",
+				"datetime",
+				"label",
+				"prediction",
+				"error"
+			)
+			.show(10)
+		
+		
+		
+		println("=== Worst Predictions RF PM10 ===")
+		rfPredPm10
+			.withColumn(
+				"error",
+				abs($"prediction" - $"label")
+			)
+			.orderBy(desc("error"))
+			.select(
+				"station",
+				"datetime",
+				"label",
+				"prediction",
+				"error"
+			)
+			.show(10)
+			
+			
+			
 		val rfRmsePm10 = evaluatorRMSE.evaluate(rfPredPm10)
 		println(s"RMSE : $rfRmsePm10")
 		val rfR2Pm10 = evaluatorR2.evaluate(rfPredPm10)
@@ -645,6 +862,45 @@ object Main2 {
 		rfPredPm25
 			.select("datetime", "station", "label", "prediction")
 			.show(50, false)
+		
+		
+		
+		println("=== Best Predictions RF PM25 ===")
+		rfPredPm25
+			.withColumn(
+				"error",
+				abs($"prediction" - $"label")
+			)
+			.orderBy("error")
+			.select(
+				"station",
+				"datetime",
+				"label",
+				"prediction",
+				"error"
+			)
+			.show(10)
+		
+		
+		
+		println("=== Worst Predictions RF PM25 ===")
+		rfPredPm25
+			.withColumn(
+				"error",
+				abs($"prediction" - $"label")
+			)
+			.orderBy(desc("error"))
+			.select(
+				"station",
+				"datetime",
+				"label",
+				"prediction",
+				"error"
+			)
+			.show(10)
+			
+			
+			
 		val rfRmsePm25 = evaluatorRMSE.evaluate(rfPredPm25)
 		println(s"RMSE : $rfRmsePm25")
 		val rfR2Pm25 = evaluatorR2.evaluate(rfPredPm25)

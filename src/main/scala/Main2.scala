@@ -1,7 +1,7 @@
 import org.apache.spark.sql.{DataFrame, DataFrameReader, Row, SparkSession}
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.types._
-import org.apache.spark.sql.expressions.Window
+import org.apache.spark.sql.expressions.{Window, WindowSpec}
 import org.apache.spark.sql.functions.{window, stddev_pop}
 import org.apache.spark.ml.{Pipeline, PipelineStage}
 import org.apache.spark.ml.feature.{StringIndexer, OneHotEncoder, VectorAssembler}
@@ -13,7 +13,22 @@ import org.apache.spark.ml.evaluation.RegressionEvaluator
 //-Djava.library.path=C:\\Users\\Administrateur\\IdeaProjects\\untitled1\\hadoop\\bin
 
 object Main2 {
-	def importIndivCSV(spark: SparkSession, hasSchema: Boolean, relPath: String): DataFrame={	// Import des fichiers CSV individuellement
+
+	//Ouverture d'une session spark
+	val spark = SparkSession.builder()
+		.appName("Qualite_Air")
+		.master("local[*]")
+		.config("spark.serializer", "org.apache.spark.serializer.JavaSerializer")	// Kyro pose des problèmes
+		.getOrCreate()
+
+	//Imports complémentaires
+	import spark.implicits._
+	
+	
+	
+	
+	
+	def importIndivCSV(hasSchema: Boolean, relPath: String): DataFrame={	// Import des fichiers CSV individuellement
 		if (hasSchema){					// idf_data
 			spark.read
 				.format("csv")
@@ -40,326 +55,340 @@ object Main2 {
 				.format("csv")
 				.option("sep", ",")
 				.option("header", false)
-				.option("inferSchema", false)
 				.load(relPath)
-				.dropDuplicates()		// Suppression des observations en double
 		}
 	}
 	
 	
 	
-	def importCSV(spark: SparkSession): (DataFrame, DataFrame, DataFrame)={				// Import des fichiers CSV idf_data.csv, pm10.csv et pm25.csv
-		// Retourne trois dataframes à partir des csv
-		(
-			importIndivCSV(spark, true, "./data/idf_data.csv"),
-			importIndivCSV(spark, false, "./data/pm10.csv"),
-			importIndivCSV(spark, false, "./data/pm25.csv")
-		)
-	}
-	
-	
-	def buildUniqueColNames(headerRow: Row): Array[String] = {
+	def buildUniqueColNames(pm: DataFrame): Array[String] = {				// Transformation des noms 
 		val seen = scala.collection.mutable.Map[String, Int]()
 
-		headerRow.toSeq.zipWithIndex.map {
+		// Récupère la 3ᵉ ligne (index 2) pour les noms de colonnes pour pm10 et pm25
+		pm.take(3).last.toSeq.zipWithIndex.map {
 			case (value, idx) =>
 				if (idx == 0) {
 					"datetime"		// Valeur de la première en-tête
 				}
 				else {
-					// valeur brute de la cellule d'en-tête
-					val raw = Option(value).map(_.toString.trim).getOrElse("")
-					val base =
-						if (raw.isEmpty){
-							s"col_$idx"
-						}
-						else{
-							raw.replaceAll("[^A-Za-z0-9_-]", "_")	 // on nettoie un peu
-						}
-
-					val count = seen.getOrElse(base, 0)
-					seen.update(base, count + 1)
+					val count = seen.getOrElse(Option(value).map(_.toString.trim).getOrElse(""), 0)
+					seen.update(Option(value).map(_.toString.trim).getOrElse(""), count + 1)
 
 					if (count == 0){
-						base			// première fois -> "RD934"
+						Option(value).map(_.toString.trim).getOrElse("")			// première fois -> "RD934"
 					}
 					else{
-						s"${base}_$count"	// deuxième fois -> "RD934_1", puis "RD934_2", etc.
+						Option(value).map(_.toString.trim).getOrElse("") + s"_$count"		// deuxième fois -> "RD934_1", puis "RD934_2", etc.
 					}
 				}
 		}.toArray
 	}
-
-	def main(args: Array[String]): Unit = {
-		/*
-			1) Ingestion et préparation des données
-				- lecture des fichiers CSV ou JSON en Spark;
-				- suppression des doublons et des valeurs manquantes
-		 */
-
-		//Ouverture d'une session spark
-		val spark = SparkSession.builder()
-			.appName("Qualite_Air")
-			.master("local[*]")
-			.config("spark.serializer", "org.apache.spark.serializer.JavaSerializer")	// Kyro pose des problèmes
-			.getOrCreate()
-
-		//Imports complémentaires
-		import spark.implicits._
-		
-		val (idf, pm10, pm25) = importCSV(spark)
-
-		//Affichage des datasets de base
-		println("=== 5 premières lignes des dataset ===")
-		idf.show(5)
-		pm10.show(5)
-		pm25.show(5)
-
-		/* 1-bis) Restructuration des data PM10 et PM25*/
-		// Récupère la 3ᵉ ligne (index 2) pour les noms de colonnes PM10
-		val headerRowPm10: Row = pm10.take(3)(2)
-		val colNamesPm10: Array[String] = buildUniqueColNames(headerRowPm10)
-
-		// Idem pour PM2.5
-		val headerRowPm25: Row = pm25.take(3)(2)
-		val colNamesPm25: Array[String] = buildUniqueColNames(headerRowPm25)
-
-		// (optionnel, pour vérifier)
-		println("=== Colonnes PM10 ===")
-		colNamesPm10.foreach(println)
-		println("=== Colonnes PM25 ===")
-		colNamesPm25.foreach(println)
-
-		val pm10Data = pm10
-			.filter($"_c0".rlike("^\\d{4}-\\d{2}-\\d{2}")) // On ne garde que les lignes dont la 1ʳᵉ colonne commence par AAAA-MM-JJ
-			.toDF(colNamesPm10: _*)
-			// enlever le 'Z' final et parser en timestamp
-			.withColumn("datetime_raw", regexp_replace($"datetime", "Z$", ""))
-			.withColumn("datetime", to_timestamp($"datetime_raw", "yyyy-MM-dd HH:mm:ss"))
-			.drop("datetime_raw")
-
-		val pm25Data = pm25
-			.filter($"_c0".rlike("^\\d{4}-\\d{2}-\\d{2}"))
-			.toDF(colNamesPm25: _*)
-			.withColumn("datetime_raw", regexp_replace($"datetime", "Z$", ""))
-			.withColumn("datetime", to_timestamp($"datetime_raw", "yyyy-MM-dd HH:mm:ss"))
-			.drop("datetime_raw")
-
-		// Colonnes station (tout sauf datetime)
-		val pm10StationCols = colNamesPm10.tail	// sans la première "datetime"
-		val nPm10 = pm10StationCols.length
-
-		// Expression stack pour Spark SQL
-		val pm10StackExpr =
-			s"stack($nPm10, " +
-				pm10StationCols.map(c => s"'$c', `$c`").mkString(", ") +
-				") as (station, pm10)"
-
-		val pm10Long = pm10Data
-			.select(
-				$"datetime",
-				expr(pm10StackExpr)
-			)
-			.where($"pm10".isNotNull)
-
-		// Passage du format dataset "wide" vers "long" via stack
-		val pm25StationCols = colNamesPm25.tail
-		val nPm25 = pm25StationCols.length
-
-		val pm25StackExpr =
-			s"stack($nPm25, " +
-				pm25StationCols.map(c => s"'$c', `$c`").mkString(", ") +
-				") as (station, pm25)"
-
-		val pm25Long = pm25Data
-			.select(
-				$"datetime",
-				expr(pm25StackExpr)
-			)
-			.where($"pm25".isNotNull)
-
-		/*
-		2) Transformation et exploration fonctionnelle
-			- Utilisation de map, filter et flatmap pour transformer les données;
-			- Calcul de statistiques par station ou par ligne (moyenne, maximum, minimum);
-			- Extraction de variables temporelles pertinentes (heure, jour, mois);
-		 */
 	
-		//Filter - Filtrage selon la longitude
-		println("=== Données avec \"stop_lon\" > 2.5 ===")
-		val idf_filtre = idf.filter($"stop_lon" > 2.5)
-		idf_filtre.show(10)
-
-		//Map - Stations les plus proches de Cergy Préfecture
-		val cergyRow = idf
-			.filter($"Nom de la Station" === "Cergy Préfecture")
-			.select("stop_lon", "stop_lat")
-			.head()
-		val cergyLon = cergyRow.getAs[Double]("stop_lon")
-		val cergyLat = cergyRow.getAs[Double]("stop_lat")
-
-		println(s"Cergy Préfecture : longitude = $cergyLon, latitude = $cergyLat")
-
-		val rddStations = idf
+	
+	
+	def wideToLong(pm: DataFrame): DataFrame={						// Passage du format dataset "wide" vers "long" via stack
+		val colNames: Array[String] = buildUniqueColNames(pm)
+		
+		// Affichage des noms colonnes créés
+		println("\n\n\n")
+		colNames.foreach(println)
+		
+		// Nombre de colonnes sans datetime
+		val nCol = colNames.length - 1
+		
+		pm
+			.filter($"_c0".rlike("^\\d{4}-\\d{2}-\\d{2}"))				// On ne garde que les lignes dont la 1ʳᵉ colonne commence par AAAA-MM-JJ
+			.toDF(colNames: _*)
+			.withColumn("datetime_raw", regexp_replace($"datetime", "Z$", ""))	// enlever le 'Z' final et parser en timestamp
+			.withColumn("datetime", to_timestamp($"datetime_raw", "yyyy-MM-dd HH:mm:ss"))
+			.drop("datetime_raw")
+			.select(
+				$"datetime",
+				expr(
+					s"stack($nCol, " +
+					colNames.tail.map(c => s"'$c', `$c`").mkString(", ") +
+					") as (station, pm)"
+				)
+			)
+			.where($"pm".isNotNull)
+	}
+	
+	
+	
+	def importCSV(): (DataFrame, DataFrame, DataFrame)={				// Import des fichiers CSV idf_data.csv, pm10.csv et pm25.csv
+		// Retourne trois dataframes à partir des csv
+		(
+			importIndivCSV(true, "./data/idf_data.csv"),
+			wideToLong(importIndivCSV(false, "./data/pm10.csv")),
+			wideToLong(importIndivCSV(false, "./data/pm25.csv"))
+		)
+	}
+	
+	
+	
+	
+	
+	def rankByDist(statCentre: Row, idf: DataFrame)={				// Renvoie le dataframe trié par distance par rapport à la station statCentre
+		idf
 			.select(
 				$"Nom de la Station".as("station"),
 				$"Nom de la ligne".as("ligne"),
 				$"stop_lon",
 				$"stop_lat"
 			)
-			.na.drop(Seq("stop_lon", "stop_lat")) //on enlève les stations sans coordonnées
 			.rdd
+			.map { row =>
+				val station = row.getAs[String]("station")
+				val ligne	 = row.getAs[String]("ligne")
+				val lon		 = row.getAs[Double]("stop_lon")
+				val lat		 = row.getAs[Double]("stop_lat")
 
-		val distancesRDD = rddStations.map { row =>
-			val station = row.getAs[String]("station")
-			val ligne	 = row.getAs[String]("ligne")
-			val lon		 = row.getAs[Double]("stop_lon")
-			val lat		 = row.getAs[Double]("stop_lat")
+				val dx = lon - statCentre.getAs[Double]("stop_lon")
+				val dy = lat - statCentre.getAs[Double]("stop_lat")
+				val dist = math.sqrt(dx*dx + dy*dy)
 
-			val dx = lon - cergyLon
-			val dy = lat - cergyLat
-			val dist = math.sqrt(dx*dx + dy*dy)
+				(dist, station, ligne, lon, lat)
+			}
+			.sortBy(_._1)
+			.toDF(
+				"distance",
+				"station",
+				"ligne",
+				"stop_lon",
+				"stop_lat"
+			)
+			.show(20, truncate = false)
+	}
+	
+	
+	
+	
 
-			(dist, station, ligne, lon, lat)
-		}
-
-		val distancesSortedRDD =
-			distancesRDD.sortBy(_._1, ascending = true)
-
-		val distancesDF = distancesSortedRDD.toDF(
-			"distance",
-			"station",
-			"ligne",
-			"stop_lon",
-			"stop_lat"
-		)
-
-		println("=== Stations les plus proches de Cergy Préfecture ===")
-		distancesDF.show(20, truncate = false)
-
-		//FlatMap - récupération du nom des lignes en IDF
-		val idfDS = idf
+	def lineNames(idf: DataFrame)={			// Récupération du nom des lignes en IDF
+		idf
 			.select($"Nom de la ligne".as[String])
 			.as[String]
-
-		val lignesFlat = idfDS.flatMap(line => Option(line))
+			.flatMap(line => Option(line))
 			.distinct()
+			.show(200, truncate = false)
+	}
+	
+	
 
-		lignesFlat.show(200, truncate = false)
-
-		//Statistiques descriptives : Moyenne, maximum et minimum (latitude et longitude)
-		print("=== Moyenne, maximum, minimum ===")
-		idf.agg(avg("stop_lon"), min("stop_lon"), max("stop_lon")).show()
-		idf.agg(avg("stop_lat"), min("stop_lat"), max("stop_lat")).show()
-
-
-		/*
-			3) Analyse approfondie
-				- Identification des stations les plus exposées à la pollution
-				- Détection des pics horaires et périodes critiques
-				- Création d'un indicateur global de pollution
-				- Détection automatique des anomalies dans les données
-		 */
-
-		//Variable qualitative pollution -> Variable quantitative
-		val idfScored = idf.withColumn(
+	def descStats(idf: DataFrame)={			// Statistiques descriptives : Moyenne, maximum et minimum sur latitude et longitude
+		idf
+			.agg(
+				avg("stop_lon"),
+				min("stop_lon"),
+				max("stop_lon")
+			)
+			.show()
+			
+		idf
+			.agg(
+				avg("stop_lat"),
+				min("stop_lat"),
+				max("stop_lat")
+			)
+			.show()
+	}
+	
+	
+	
+	
+	
+	def qualiToQuanti(idf: DataFrame): DataFrame={					// Variable qualitative pollution -> Variable quantitative
+		idf.withColumn(
 			"score_pollution",
-			when($"Niveau de pollution" === "FAIBLE",	 lit(1))
-				.when($"Niveau de pollution" === "MOYENNE", lit(2))
-				.when($"Niveau de pollution" === "ELEVE",	 lit(3))
-				.when($"Niveau de pollution" === "station aérienne",	lit(0)) // ou null si tu préfères
-				.otherwise(lit(null).cast("int"))
+			when($"Niveau de pollution" === "FAIBLE", lit(1))
+			.when($"Niveau de pollution" === "MOYENNE", lit(2))
+			.when($"Niveau de pollution" === "ELEVE", lit(3))
+			.when($"Niveau de pollution" === "station aérienne", lit(0))	// Stations aériennes non prises en compte
+			.otherwise(lit(null).cast("int"))
 		)
-
-		//a) Identification des stations les plus exposées les plus pollués
-		val stationsExpo = idfScored
+	}
+	
+	
+	
+	def mostPolluted(idf: DataFrame)={						// Identification des stations les plus polluées
+		idf
 			.groupBy("Nom de la Station", "Nom de la ligne")
 			.agg(
 				avg("score_pollution").as("score_moyen"),
 				max("score_pollution").as("score_max")
 			)
-			.orderBy(desc("score_moyen"), desc("score_max"))
+			.orderBy(
+				desc("score_moyen"),
+				desc("score_max")
+			)
+			.show(20, truncate = false)
+	}
+	
+	
+	
+	def pollutionPeaks(pm: DataFrame, window: WindowSpec)={				// Affichage des pics de pollution
+		pm
+			.select(
+				$"datetime",
+				$"station",
+				$"pm"
+			)
+			.orderBy(
+				$"station",
+				$"datetime"
+			)
+			.withColumn(							// Calcul de la moyenne
+				"pm_mean_24h",
+				avg($"pm").over(window)
+			)
+			.withColumn(							// Calcul de l'écart-type
+				"pm_std_24h",
+				stddev_pop($"pm").over(window)
+			)
+			.withColumn(							// z-score est la valeur centrée réduite
+				"pm_zscore",
+				($"pm" - $"pm_mean_24h") / $"pm_std_24h"
+			)
+			.filter($"pm_std_24h" > 0 && abs($"pm_zscore") >= 2.5)		// Un "pic" : z-score > 2.5 et std > 0 (pour éviter division par zéro)
+			.orderBy(abs($"pm_zscore").desc)
+			.show(50, truncate = false)
+	}
+	
+	
+	
+	
 
-		println("=== Stations les plus exposées ===")
-		stationsExpo.show(20, truncate = false)
+	def main(args: Array[String]): Unit = {
+	/*
+		1) Ingestion et préparation des données
+			- lecture des fichiers CSV ou JSON en Spark;
+			- suppression des doublons et des valeurs manquantes
+	*/
+		
+		
+		
+		// Import des fichiers CSV idf_data.csv, pm10.csv et pm25.csv
+		val (idf, pm10, pm25) = importCSV()
 
-		//b) Détection des pics horaires et périodes critiques (utilise un dataset complémentaire)
+		//Affichage des datasets de base
+		println("=== 5 premières lignes des dataset ===")
+		idf.show(5)
+		pm10.show(5)
+		pm25.show(5)
+		
+		
+		
+		
+		
+	/*
+		2) Transformation et exploration fonctionnelle
+			- Utilisation de map, filter et flatmap pour transformer les données;
+			- Calcul de statistiques par station ou par ligne (moyenne, maximum, minimum);
+			- Extraction de variables temporelles pertinentes (heure, jour, mois);
+	*/
+		
+		
+		
+		// Filter - Filtrage selon la longitude
+		println("=== Données avec \"stop_lon\" > 2.5 ===")
+		idf
+			.filter($"stop_lon" > 2.5)
+			.show(10)
+		
+		
+
+		// Map - Stations les plus proches de Cergy Préfecture
+		val cergy = idf
+			.filter($"Nom de la Station" === "Cergy Préfecture")
+			.select("stop_lon", "stop_lat")
+			.head()
+		val cergyLon = cergy.getAs[Double]("stop_lon")
+		val cergyLat = cergy.getAs[Double]("stop_lat")
+		println(s"Cergy Préfecture : longitude = $cergyLon, latitude = $cergyLat")
+
+		println("=== Stations les plus proches de Cergy Préfecture ===")
+		rankByDist(cergy, idf)
+
+
+
+		// FlatMap - récupération du nom des lignes en IDF
+		lineNames(idf)
+		
+		
+
+		// Statistiques descriptives : Moyenne, maximum et minimum (latitude et longitude)
+		print("=== Moyenne, maximum, minimum ===")
+		descStats(idf)
+		
+
+
+
+
+	/*
+		3) Analyse approfondie
+			- Identification des stations les plus exposées à la pollution
+			- Détection des pics horaires et périodes critiques
+			- Création d'un indicateur global de pollution
+			- Détection automatique des anomalies dans les données
+	*/
+
+
+
+		// Variable qualitative pollution -> Variable quantitative
+		val idfQuanti = qualiToQuanti(idf)
+		
+
+
+		// a) Identification des stations les plus polluées
+		println("=== Stations les plus polluées ===")
+		mostPolluted(idfQuanti)
+		
+		
+
+		// b) Détection des pics horaires et périodes critiques (utilise un dataset complémentaire)
 
 		// ===== Détection de pics de pollution (PM10) =====
-		// On ne garde que les lignes où PM10 est défini
-		val pm10TS = pm10Long
-			.filter($"pm10".isNotNull)
-			.select($"datetime", $"station", $"pm10")
-			.orderBy($"station", $"datetime")
-
+		
 		// Fenêtre de 24 points vers l'arrière (par station)
 		// Si tes données sont horaires, cela correspond à ~24h
-		val w24hPm10 = Window
+		val w24h = Window
 			.partitionBy("station")
 			.orderBy("datetime")
 			.rowsBetween(-23, 0)	 // la ligne courante + les 23 précédentes
 
-		// Moyenne et écart-type glissants
-		val pm10WithStats = pm10TS
-			.withColumn("pm10_mean_24h", avg($"pm10").over(w24hPm10))
-			.withColumn("pm10_std_24h", stddev_pop($"pm10").over(w24hPm10))
-			.withColumn("pm10_zscore",
-				($"pm10" - $"pm10_mean_24h") / $"pm10_std_24h"
-			)
 
-		// Un "pic" : z-score > 2.5 et std > 0 (pour éviter division par zéro)
-		val pm10Peaks = pm10WithStats
-			.filter($"pm10_std_24h" > 0 && $"pm10_zscore" >= 2.5)
-			.orderBy($"pm10_zscore".desc)
 
 		// Afficher les 50 plus gros pics PM10
 		println("=== Pics de pollution PM10 (z-score >= 2.5) ===")
-		pm10Peaks.show(50, truncate = false)
+		pollutionPeaks(pm10, w24h)
 
-		// ===== Détection de pics de pollution (PM2.5) =====
 
-		val pm25TS = pm25Long
-			.filter($"pm25".isNotNull)
-			.select($"datetime", $"station", $"pm25")
-			.orderBy($"station", $"datetime")
 
-		val w24hPm25 = Window
-			.partitionBy("station")
-			.orderBy("datetime")
-			.rowsBetween(-23, 0)
-
-		val pm25WithStats = pm25TS
-			.withColumn("pm25_mean_24h", avg($"pm25").over(w24hPm25))
-			.withColumn("pm25_std_24h", stddev_pop($"pm25").over(w24hPm25))
-			.withColumn("pm25_zscore",
-				($"pm25" - $"pm25_mean_24h") / $"pm25_std_24h"
-			)
-
-		val pm25Peaks = pm25WithStats
-			.filter($"pm25_std_24h" > 0 && $"pm25_zscore" >= 2.5)
-			.orderBy($"pm25_zscore".desc)
-
+		// Afficher les 50 plus gros pics PM2.5
 		println("=== Pics de pollution PM2.5 (z-score >= 2.5) ===")
-		pm25Peaks.show(50, truncate = false)
+		pollutionPeaks(pm25, w24h)
+		
+		
 
-		//c) Création d'un indicateur global de pollution
-		val global = idfScored
+		// c) Création d'un indicateur global de pollution
+		println("=== Indicateur global de pollution ===")
+		val global = idfQuanti
 			.agg(avg("score_pollution").as("score_moyen"))
 			.withColumn("indice_global_0_100", $"score_moyen" / 3 * 100)	// 3 = score max théorique
+			.show(truncate = false)
 
-		println("=== Indicateur global de pollution ===")
-		global.show(false)
 
-		//d) Détection automatique des anomalies dans les données
+
+		// d) Détection automatique des anomalies dans les données
 		//Stations "outliers" par rapport à leur ligne
-		val statsLigne = idfScored
+		val statsLigne = idfQuanti
 			.groupBy("Nom de la ligne")
 			.agg(
 				avg("score_pollution").as("moy_ligne"),
 				stddev("score_pollution").as("sd_ligne")
 			)
 
-		val idfZ = idfScored
+		val idfZ = idfQuanti
 			.join(statsLigne, "Nom de la ligne")
 			.withColumn("z_score",
 				($"score_pollution" - $"moy_ligne") / $"sd_ligne"
@@ -381,17 +410,17 @@ object Main2 {
 		// PARTIE 5
 
 		// 1) Ajout des variables temporelles sur pm10 et sur pm25
-		val pm10Feat = pm10Long
+		val pm10Feat = pm10
 			.withColumn("hour", hour(col("datetime")))
 			.withColumn("dayOfWeek", dayofweek(col("datetime")))
 			.withColumn("month", month(col("datetime")))
-			.withColumn("label", col("pm10").cast("double"))
+			.withColumn("label", col("pm").cast("double"))
 			
-		val pm25Feat = pm25Long
+		val pm25Feat = pm25
 			.withColumn("hour", hour(col("datetime")))
 			.withColumn("dayOfWeek", dayofweek(col("datetime")))
 			.withColumn("month", month(col("datetime")))
-			.withColumn("label", col("pm25").cast("double"))
+			.withColumn("label", col("pm").cast("double"))
 			
 		// Découpage en training set et test set
 		val Array(trainPm10, testPm10) = pm10Feat.randomSplit(Array(0.7, 0.3), seed = 42)
